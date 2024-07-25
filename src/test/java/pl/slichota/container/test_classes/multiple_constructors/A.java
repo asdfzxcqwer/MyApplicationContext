@@ -1,4 +1,4 @@
-package pl.slichota;
+package pl.slichota.container.test_classes.multiple_constructors;
 
 import pl.slichota.annotations.Autowired;
 import pl.slichota.annotations.Component;
@@ -7,9 +7,12 @@ import pl.slichota.annotations.Component;
 public class A {
 
     @Autowired
-    private B b;
+    public A() {
+
+    }
 
     @Autowired
-    private C c;
+    public A(int i) {
 
+    }
 }

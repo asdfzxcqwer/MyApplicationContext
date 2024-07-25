@@ -10,13 +10,17 @@ public class DependencyGraph {
     }
 
     public void addVertex(Class<?> clazz) {
-        adjList.putIfAbsent(clazz, new ArrayList<>());
+        if (clazz != null) {
+            adjList.putIfAbsent(clazz, new ArrayList<>());
+        }
     }
 
     public void addEdge(Class<?> source, Class<?> destination) {
         addVertex(source);
         addVertex(destination);
-        adjList.get(source).add(destination);
+        if (destination != null) {
+            adjList.get(source).add(destination);
+        }
     }
 
 
@@ -28,13 +32,15 @@ public class DependencyGraph {
         return false;
     }
 
-    public void showEdges() {
+    public String showEdges() {
+        StringBuilder sb = new StringBuilder();
         for (Map.Entry<Class<?>, List<Class<?>>> entry : adjList.entrySet()) {
             Class<?> source = entry.getKey();
             for (Class<?> destination : entry.getValue()) {
-                System.out.println(source.getName() + " -> " + destination.getName());
+                sb.append(source.getName()).append(" -> ").append(destination.getName()).append("\n");
             }
         }
+        return sb.toString();
     }
 
 

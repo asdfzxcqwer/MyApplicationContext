@@ -2,6 +2,8 @@ package pl.slichota.container;
 
 import pl.slichota.annotations.Autowired;
 import pl.slichota.annotations.Component;
+import pl.slichota.container.exception.ApplicationContextException;
+import pl.slichota.container.exception.ApplicationContextExceptionMessage;
 import pl.slichota.cycle.DependencyGraph;
 
 import java.io.File;
@@ -24,7 +26,13 @@ public class MyApplicationContext implements ApplicationContext{
         for (Class<?> c : components) {
             buildDependencyGraph(c, dependencies);
         }
-        initializeDependencies(dependencies);
+        if (dependencies.hasCycle()) {
+            throw new ApplicationContextException(ApplicationContextExceptionMessage.CYCLE_DETECTED.getMessage(), dependencies.showEdges());
+        }
+
+        for (Class<?> c : components) {
+            createInstance(c);
+        }
     }
 
 
@@ -32,12 +40,118 @@ public class MyApplicationContext implements ApplicationContext{
         this(clazz.getPackage().getName());
     }
 
+    private void createInstance(Class<?> clazz) {
+        if (clazz == null) return;
+
+        Constructor<?>[] constructors = clazz.getConstructors();
+        int annotatedConstructorsLength = getAnnotatedConstructorsLength(constructors);
+
+        if (annotatedConstructorsLength > 1) {
+            throw new ApplicationContextException(ApplicationContextExceptionMessage.MULTIPLE_CONSTRUCTORS.getMessage(), Arrays.toString(constructors));
+        }
+        else if (getAnnotatedConstructorsLength(constructors) == 1) {
+            createInstanceWithAnnotatedConstructor(clazz, constructors);
+        } else {
+           createInstanceWithNoArgsConstructor(clazz, constructors);
+        }
+    }
+
+    private void createInstanceWithAnnotatedConstructor(Class<?> clazz, Constructor<?>[] constructors) {
+        for (Constructor<?> constructor : constructors) {
+            if (constructor.isAnnotationPresent(Autowired.class)) {
+                Class<?>[] constructorParameters = constructor.getParameterTypes();
+                Object[] parametersInstances = createParametersInstances(constructorParameters);
+
+                try {
+                    Object instance = constructor.newInstance(parametersInstances);
+                    injectFields(clazz, instance);
+                    if (!beans.containsKey(clazz)) {
+                        beans.put(clazz, instance);
+                    }
+                } catch (InvocationTargetException | InstantiationException | IllegalAccessException e) {
+                    throw new ApplicationContextException(ApplicationContextExceptionMessage.CANNOT_CREATE_INSTANCE.getMessage(), String.valueOf(e));
+                }
+            }
+        }
+    }
+
+    private Object[] createParametersInstances(Class<?>[] constructorParameters) {
+        Object[] parametersInstances = new Object[constructorParameters.length];
+        for (int i=0; i<constructorParameters.length; i++) {
+            if (!constructorParameters[i].isAnnotationPresent(Component.class)) {
+                throw new ApplicationContextException(ApplicationContextExceptionMessage.BEAN_NOT_FOUND.getMessage(), String.valueOf(constructorParameters[i]));
+            }
+            if (!beans.containsKey(constructorParameters[i])) {
+                createInstance(constructorParameters[i]);
+            }
+            parametersInstances[i] = beans.get(constructorParameters[i]);
+        }
+        return parametersInstances;
+    }
+
+    private void createInstanceWithNoArgsConstructor(Class<?> clazz, Constructor<?>[] constructors) {
+        Constructor<?> noParamsConstructor = clazz.getConstructors()[0];
+        Object instance;
+        try {
+            instance = noParamsConstructor.newInstance();
+        } catch (InvocationTargetException | InstantiationException | IllegalAccessException e) {
+            throw new ApplicationContextException(ApplicationContextExceptionMessage.CANNOT_CREATE_INSTANCE.getMessage(), String.valueOf(e));
+        }
+
+        injectFields(clazz, instance);
+        if (!beans.containsKey(clazz)) {
+            beans.put(clazz, instance);
+        }
+
+    }
+
+    private void injectFields(Class<?> clazz, Object instance) {
+        Field[] fields = clazz.getDeclaredFields();
+        for (Field field : fields) {
+            if (field.isAnnotationPresent(Autowired.class)) {
+                if (!field.getType().isAnnotationPresent(Component.class)) {
+                    throw new ApplicationContextException(ApplicationContextExceptionMessage.BEAN_NOT_FOUND.getMessage(), String.valueOf(field.getType()));
+                }
+                if (!beans.containsKey(field.getType())) {
+                    createInstance(field.getType());
+                }
+                Object dependencyInstance = beans.get(field.getType());
+                if (!field.canAccess(instance)) {
+                    field.setAccessible(true);
+                    try {
+                        field.set(instance, dependencyInstance);
+                    } catch (IllegalAccessException e) {
+                        throw new RuntimeException(e);
+                    }
+                    field.setAccessible(false);
+                } else {
+                    try {
+                        field.set(instance, dependencyInstance);
+                    } catch (IllegalAccessException e) {
+                        throw new ApplicationContextException(ApplicationContextExceptionMessage.CANNOT_CREATE_INSTANCE.getMessage(), String.valueOf(e));
+                    }
+                }
+            }
+        }
+    }
+
+
+    private int getAnnotatedConstructorsLength(Constructor<?>[] constructors) {
+        int length = 0;
+        for (Constructor<?> constructor : constructors) {
+            if (constructor.isAnnotationPresent(Autowired.class)) {
+                length++;
+            }
+        }
+        return length;
+    }
+
     private void buildDependencyGraph(Class<?> c, DependencyGraph dependencyGraph){
         Field[] fields = c.getDeclaredFields();
         for (Field field : fields) {
             if (field.isAnnotationPresent(Autowired.class)) {
                 if (!field.getType().isAnnotationPresent(Component.class)) {
-                    throw new RuntimeException("It is not bean: " + field.getType());
+                    throw new ApplicationContextException(ApplicationContextExceptionMessage.BEAN_NOT_FOUND.getMessage(), String.valueOf(field.getType()));
                 }
                 if (dependencyGraph.edgeExists(c, field.getType())) {
                     return;
@@ -48,95 +162,6 @@ public class MyApplicationContext implements ApplicationContext{
             }
         }
     }
-
-    private void initializeDependencies(DependencyGraph dependencies) {
-        if (dependencies.hasCycle()) {
-            throw new RuntimeException("Graph has cycle");
-        }
-        for (Map.Entry<Class<?>, List<Class<?>>> entry : dependencies.getAdjList().entrySet()) {
-            var component = entry.getKey();
-            var componentDependencies = entry.getValue();
-            for (int i = componentDependencies.size() - 1; i >= 0; i--) {
-                Object dependencyInstance;
-                // drugi warunek jest niepoprawny
-                if (checkIfConstructorExists(componentDependencies.get(i), dependencies) && !dependencies.getAdjList().get(componentDependencies.get(i)).isEmpty()) {
-                    dependencyInstance = createInstanceAllArgsConstructor(componentDependencies.get(i), dependencies);
-                } else {
-                    dependencyInstance = createInstanceNoArgsConstructor(componentDependencies.get(i));
-                }
-                beans.put(componentDependencies.get(i), dependencyInstance);
-            }
-            Object componentInstance;
-            if (checkIfConstructorExists(component, dependencies) && !componentDependencies.isEmpty()) {
-                componentInstance = createInstanceAllArgsConstructor(component, dependencies);
-            } else {
-                componentInstance = createInstanceNoArgsConstructor(component);
-            }
-
-            beans.put(component, componentInstance);
-        }
-    }
-
-    private boolean checkIfConstructorExists(Class<?> clazz, DependencyGraph dependencyGraph) {
-        var classDependencies = dependencyGraph
-                .getAdjList()
-                .get(clazz);
-        try {
-            clazz.getConstructor(classDependencies.toArray(new Class[0]));
-            return true;
-        } catch (NoSuchMethodException e) {
-            return false;
-        }
-    }
-
-    private Object createInstanceAllArgsConstructor(Class<?> clazz, DependencyGraph dependencies) {
-        if (beans.containsKey(clazz)) {
-            return beans.get(clazz);
-        }
-        var adjs = dependencies.getAdjList();
-        var classDependencies = adjs.get(clazz);
-
-        var objects = new ArrayList<>();
-        for (Class<?> clazzDependency : classDependencies) {
-            objects.add(beans.get(clazzDependency));
-        }
-        try {
-            Constructor<?> allArgsConstructor = clazz.getConstructor(classDependencies.toArray(new Class[0]));
-            Object instance = allArgsConstructor.newInstance(objects.toArray());
-            return instance;
-        } catch (InvocationTargetException | InstantiationException | IllegalAccessException | NoSuchMethodException e) {
-            throw new RuntimeException(e);
-        }
-    }
-
-    private Object createInstanceNoArgsConstructor(Class<?> clazz) {
-        if (beans.containsKey(clazz)) {
-            return beans.get(clazz);
-        }
-        Constructor<?> noParamsConstructor = clazz.getConstructors()[0];
-        Object instance = null;
-        try {
-            instance = noParamsConstructor.newInstance();
-            Field[] fields = instance.getClass().getDeclaredFields();
-            for (Field field : fields) {
-                if (field.isAnnotationPresent(Autowired.class)) {
-                    if (!field.canAccess(instance)) {
-                        field.setAccessible(true);
-                        var bean = beans.get(field.getType());
-                        field.set(instance, bean);
-                        field.setAccessible(false);
-                    } else {
-                        var bean = beans.get(field.getType());
-                        field.set(instance, bean);
-                    }
-                }
-            }
-            return instance;
-        } catch (InstantiationException | IllegalAccessException | InvocationTargetException e) {
-            return null;
-        }
-    }
-
 
     public <T> T getBean(Class<T> clazz) {
         if (beans.containsKey(clazz)) {
