@@ -6,10 +6,23 @@ import pl.slichota.annotations.Component;
 @Component
 public class B {
 
+    @Autowired
+    private final C c;
 
     @Autowired
-    private C c;
+    private final A a;
 
     @Autowired
-    private A a;
+    public B(C c, A a) {
+        this.c = c;
+        this.a = a;
+    }
+
+    public C getC() {
+        return c;
+    }
+
+    public A getA() {
+        return a;
+    }
 }
