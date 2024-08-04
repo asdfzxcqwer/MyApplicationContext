@@ -6,6 +6,7 @@ import org.junit.jupiter.api.Test;
 import pl.slichota.container.test_classes.normal.A;
 import pl.slichota.container.test_classes.normal.B;
 import pl.slichota.container.test_classes.normal.C;
+import pl.slichota.cycle.exception.DependencyGraphException;
 
 import java.util.Arrays;
 import java.util.List;
@@ -15,7 +16,6 @@ import static org.junit.jupiter.api.Assertions.*;
 public class MyApplicationContextTest {
 
     MyApplicationContext context;
-
 
     @Test
     public void context_can_create_instances() {
@@ -39,9 +39,16 @@ public class MyApplicationContextTest {
     }
 
     @Test
-    public void context_can_detect_cycle() {
-        // Arrange
-        context = new MyApplicationContext("pl.slichota.container.test_classes.cycle");
+    public void context_throws_exception_when_bean_not_found() {
+        context = new MyApplicationContext("pl.slichota.container.test_classes.normal");
 
     }
+
+    @Test
+    public void context_can_detect_cycle() {
+        assertThrows(DependencyGraphException.class,
+                () -> new MyApplicationContext("pl.slichota.container.test_classes.cycle"));
+    }
+
+
 }

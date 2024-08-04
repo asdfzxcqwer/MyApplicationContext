@@ -1,10 +1,15 @@
 package pl.slichota.container.exception;
 
 public enum ApplicationContextMessage {
-    BEAN_NOT_FOUND("Bean not found");
+    BEAN_NOT_FOUND("Bean not found"),
+    CYCLE_DETECTED("Cycle has been detected");
 
-    String message;
+    private final String message;
 
-    ApplicationContextMessage(String s) {
+    ApplicationContextMessage(String message) {
+        this.message = message;
+    }
+    public String getMessage() {
+        return this.message;
     }
 }

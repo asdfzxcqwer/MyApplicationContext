@@ -10,5 +10,4 @@ public class Main {
         ApplicationContext applicationContext = new MyApplicationContext(Main.class);
     }
 
-
 }

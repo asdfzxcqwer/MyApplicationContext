@@ -2,6 +2,8 @@ package pl.slichota.container;
 
 import pl.slichota.annotations.Autowired;
 import pl.slichota.annotations.Component;
+import pl.slichota.container.exception.ApplicationContextException;
+import pl.slichota.container.exception.ApplicationContextMessage;
 import pl.slichota.cycle.DependencyGraph;
 
 import java.io.File;
@@ -11,76 +13,70 @@ import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
 import java.net.URL;
 import java.util.*;
+import java.util.stream.Collectors;
+
+import static pl.slichota.cycle.DependencyGraph.buildDependencyGraph;
 
 public class MyApplicationContext implements ApplicationContext{
 
     private final Map<Class<?>, Object> beans = new HashMap<>();
 
     public MyApplicationContext(String packageName) {
-        var dependencies = new DependencyGraph();
-        var classes = getClasses(packageName);
-        var components = getComponents(classes);
+        DependencyGraph dependencies = new DependencyGraph();
+        List<Class<?>> classes = getClasses(packageName);
+        List<Class<?>> components = getComponents(classes);
 
-        for (Class<?> c : components) {
-            buildDependencyGraph(c, dependencies);
-        }
+        components.forEach(c -> DependencyGraph.buildDependencyGraph(c, dependencies));
         initializeDependencies(dependencies);
     }
-
 
     public MyApplicationContext(Class<?> clazz) {
         this(clazz.getPackage().getName());
     }
 
-    private void buildDependencyGraph(Class<?> c, DependencyGraph dependencyGraph){
-        Field[] fields = c.getDeclaredFields();
-        for (Field field : fields) {
-            if (field.isAnnotationPresent(Autowired.class)) {
-                if (!field.getType().isAnnotationPresent(Component.class)) {
-                    throw new RuntimeException("It is not bean: " + field.getType());
-                }
-                if (dependencyGraph.edgeExists(c, field.getType())) {
-                    return;
-                } else {
-                    dependencyGraph.addEdge(c, field.getType());
-                    buildDependencyGraph(field.getType(), dependencyGraph);
-                }
-            }
-        }
+    @Override
+    public <T> T getBean(Class<T> clazz) {
+        return (T) beans.get(clazz);
     }
 
+    @Override
+    public List<String> getBeanDefinitionNames() {
+        return beans.keySet().stream()
+                .map(Class::getName)
+                .toList();
+    }
+
+
     private void initializeDependencies(DependencyGraph dependencies) {
-        if (dependencies.hasCycle()) {
-            throw new RuntimeException("Graph has cycle");
-        }
+        dependencies.hasCycle();
+
         for (Map.Entry<Class<?>, List<Class<?>>> entry : dependencies.getAdjList().entrySet()) {
             var component = entry.getKey();
             var componentDependencies = entry.getValue();
+
             for (int i = componentDependencies.size() - 1; i >= 0; i--) {
-                Object dependencyInstance;
-                // drugi warunek jest niepoprawny
-                if (checkIfConstructorExists(componentDependencies.get(i), dependencies) && !dependencies.getAdjList().get(componentDependencies.get(i)).isEmpty()) {
-                    dependencyInstance = createInstanceAllArgsConstructor(componentDependencies.get(i), dependencies);
-                } else {
-                    dependencyInstance = createInstanceNoArgsConstructor(componentDependencies.get(i));
-                }
+                Object dependencyInstance = createInstance(componentDependencies.get(i), dependencies);
                 beans.put(componentDependencies.get(i), dependencyInstance);
             }
-            Object componentInstance;
-            if (checkIfConstructorExists(component, dependencies) && !componentDependencies.isEmpty()) {
-                componentInstance = createInstanceAllArgsConstructor(component, dependencies);
-            } else {
-                componentInstance = createInstanceNoArgsConstructor(component);
-            }
 
+            Object componentInstance = createInstance(component, dependencies);
             beans.put(component, componentInstance);
         }
     }
 
+    private Object createInstance(Class<?> clazz, DependencyGraph dependencies) {
+        if (beans.containsKey(clazz)) {
+            return beans.get(clazz);
+        }
+        if (checkIfConstructorExists(clazz, dependencies)) {
+            return createInstanceAllArgsConstructor(clazz, dependencies);
+        } else {
+            return createInstanceNoArgsConstructor(clazz);
+        }
+    }
+
     private boolean checkIfConstructorExists(Class<?> clazz, DependencyGraph dependencyGraph) {
-        var classDependencies = dependencyGraph
-                .getAdjList()
-                .get(clazz);
+        List<Class<?>> classDependencies = dependencyGraph.getAdjList().getOrDefault(clazz, Collections.emptyList());
         try {
             clazz.getConstructor(classDependencies.toArray(new Class[0]));
             return true;
@@ -90,82 +86,57 @@ public class MyApplicationContext implements ApplicationContext{
     }
 
     private Object createInstanceAllArgsConstructor(Class<?> clazz, DependencyGraph dependencies) {
-        if (beans.containsKey(clazz)) {
-            return beans.get(clazz);
-        }
-        var adjs = dependencies.getAdjList();
-        var classDependencies = adjs.get(clazz);
+        Map<Class<?>, List<Class<?>>> adjList = dependencies.getAdjList();
+        List<Class<?>> classDependencies = adjList.getOrDefault(clazz, Collections.emptyList());
 
-        var objects = new ArrayList<>();
-        for (Class<?> clazzDependency : classDependencies) {
-            objects.add(beans.get(clazzDependency));
-        }
+        List<Object> dependencyInstances = classDependencies.stream()
+                .map(beans::get)
+                .toList();
         try {
-            Constructor<?> allArgsConstructor = clazz.getConstructor(classDependencies.toArray(new Class[0]));
-            Object instance = allArgsConstructor.newInstance(objects.toArray());
-            return instance;
-        } catch (InvocationTargetException | InstantiationException | IllegalAccessException | NoSuchMethodException e) {
-            throw new RuntimeException(e);
+            Constructor<?> allArgsConstuctor = clazz.getConstructor(classDependencies.toArray(new Class[0]));
+            return allArgsConstuctor.newInstance(dependencyInstances.toArray());
+        } catch (NoSuchMethodException | IllegalAccessException | InstantiationException | InvocationTargetException e) {
+            throw new RuntimeException("Failed to create instance of " + clazz.getName(), e);
         }
     }
 
     private Object createInstanceNoArgsConstructor(Class<?> clazz) {
-        if (beans.containsKey(clazz)) {
-            return beans.get(clazz);
-        }
-        Constructor<?> noParamsConstructor = clazz.getConstructors()[0];
-        Object instance = null;
         try {
-            instance = noParamsConstructor.newInstance();
-            Field[] fields = instance.getClass().getDeclaredFields();
-            for (Field field : fields) {
-                if (field.isAnnotationPresent(Autowired.class)) {
-                    if (!field.canAccess(instance)) {
-                        field.setAccessible(true);
-                        var bean = beans.get(field.getType());
-                        field.set(instance, bean);
-                        field.setAccessible(false);
-                    } else {
-                        var bean = beans.get(field.getType());
-                        field.set(instance, bean);
-                    }
+            Constructor<?> noParamConstructor = clazz.getDeclaredConstructor();
+            Object instance = noParamConstructor.newInstance();
+            injectAutowiredFields(instance);
+            return instance;
+        } catch (NoSuchMethodException | InvocationTargetException | IllegalAccessException | InstantiationException e) {
+            throw new RuntimeException("Failed to create instance of " + clazz.getName(), e);
+        }
+    }
+
+    private void injectAutowiredFields(Object instance) throws IllegalAccessException {
+        Field[] fields = instance.getClass().getDeclaredFields();
+        for (Field field : fields) {
+            if (field.isAnnotationPresent(Autowired.class)) {
+                boolean accessible = field.canAccess(instance);
+                if (!accessible) {
+                    field.setAccessible(true);
+                }
+                Object bean = beans.get(field.getType());
+                field.set(instance, bean);
+                if (!accessible) {
+                    field.setAccessible(false);
                 }
             }
-            return instance;
-        } catch (InstantiationException | IllegalAccessException | InvocationTargetException e) {
-            return null;
         }
-    }
-
-
-    public <T> T getBean(Class<T> clazz) {
-        if (beans.containsKey(clazz)) {
-            return (T) beans.get(clazz);
-        }
-        return null;
-    }
-
-    @Override
-    public List<String> getBeanDefinitionNames() {
-        return beans.keySet()
-                .stream()
-                .map(Class::getName)
-                .toList();
     }
 
     private List<Class<?>> getComponents(List<Class<?>> classes) {
-        var components = new ArrayList<Class<?>>();
-        for (Class<?> clazz : classes) {
-            if (clazz.isAnnotationPresent(Component.class)) {
-                components.add(clazz);
-            }
-        }
-        return components;
+        return classes.stream()
+                .filter(clazz -> clazz.isAnnotationPresent(Component.class))
+                .toList();
     }
 
     private List<Class<?>> findClasses(File directory, String packageName) {
         List<Class<?>> classes = new ArrayList<>();
-        if (!directory.exists()) {
+        if (!directory.exists() || !directory.isDirectory()) {
             return classes;
         }
         File[] files = directory.listFiles();
@@ -174,16 +145,18 @@ public class MyApplicationContext implements ApplicationContext{
         }
         for (File file : files) {
             if (file.isDirectory()) {
-                assert !file.getName().contains(".");
-                classes.addAll(findClasses(file, packageName + "." + file.getName()));
+                if (!file.getName().contains(".")) {
+                    classes.addAll(findClasses(file, packageName + "." + file.getName()));
+                }
             } else if (file.getName().endsWith(".class")) {
+                String className = packageName + '.' + file.getName().substring(0, file.getName().length() - 6);
                 try {
-                    var clazz = Class.forName(packageName + '.' + file.getName().substring(0, file.getName().length() - 6));
+                    Class<?> clazz = Class.forName(className);
                     if (clazz.isAnnotationPresent(Component.class)) {
                         classes.add(clazz);
                     }
                 } catch (ClassNotFoundException e) {
-                    throw new RuntimeException(e);
+                    throw new RuntimeException("Class not found: " + className, e);
                 }
             }
         }
@@ -192,26 +165,24 @@ public class MyApplicationContext implements ApplicationContext{
 
     private List<Class<?>> getClasses(String packageName) {
         ClassLoader classLoader = Thread.currentThread().getContextClassLoader();
-        assert classLoader != null;
+        if (classLoader == null) {
+            throw new IllegalStateException("Class loader is not available.");
+        }
         String path = packageName.replace('.', '/');
-        Enumeration<URL> resources;
+        List<URL> resources;
         try {
-            resources = classLoader.getResources(path);
+            resources = Collections.list(classLoader.getResources(path));
         } catch (IOException e) {
-            throw new RuntimeException(e);
+            throw new RuntimeException("Failed to get resources for " + path, e);
         }
-        List<File> dirs = new ArrayList<>();
-        while (resources.hasMoreElements()) {
-            URL resource = resources.nextElement();
-            dirs.add(new File(resource.getFile()));
-        }
+        List<File> dirs = resources.stream()
+                .map(resource -> new File(resource.getFile()))
+                .toList();
 
         List<Class<?>> classes = new ArrayList<>();
         for (File directory : dirs) {
             classes.addAll(findClasses(directory, packageName));
         }
-
         return classes;
     }
-
 }

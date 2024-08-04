@@ -7,5 +7,9 @@ import pl.slichota.annotations.Component;
 public class A {
 
     @Autowired
-    private B b;
+    private final B b;
+
+    public A(B b) {
+        this.b = b;
+    }
 }
