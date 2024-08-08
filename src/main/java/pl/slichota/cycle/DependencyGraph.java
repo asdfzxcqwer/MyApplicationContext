@@ -1,11 +1,5 @@
 package pl.slichota.cycle;
 
-import pl.slichota.annotations.Autowired;
-import pl.slichota.annotations.Component;
-import pl.slichota.cycle.exception.DependencyGraphException;
-import pl.slichota.cycle.exception.DependencyGraphExceptionMessage;
-
-import java.lang.reflect.Field;
 import java.util.*;
 
 public class DependencyGraph {
@@ -21,23 +15,6 @@ public class DependencyGraph {
         }
     }
 
-    public static void buildDependencyGraph(Class<?> c, DependencyGraph dependencyGraph){
-        Field[] fields = c.getDeclaredFields();
-        for (Field field : fields) {
-            if (field.isAnnotationPresent(Autowired.class)) {
-                if (!field.getType().isAnnotationPresent(Component.class)) {
-                    throw new DependencyGraphException(DependencyGraphExceptionMessage.IT_IS_NOT_BEAN.getMessage(), field.getType().getName());
-                }
-                if (dependencyGraph.edgeExists(c, field.getType())) {
-                    return;
-                } else {
-                    dependencyGraph.addEdge(c, field.getType());
-                    buildDependencyGraph(field.getType(), dependencyGraph);
-                }
-            }
-        }
-    }
-
     public void addEdge(Class<?> source, Class<?> destination) {
         addVertex(source);
         addVertex(destination);
@@ -45,6 +22,7 @@ public class DependencyGraph {
             adjList.get(source).add(destination);
         }
     }
+
 
     public boolean edgeExists(Class<?> source, Class<?> destination) {
         List<Class<?>> neighbors = adjList.get(source);
@@ -65,15 +43,17 @@ public class DependencyGraph {
         return sb.toString();
     }
 
-    public void hasCycle() {
+
+    public boolean hasCycle() {
         Set<Class<?>> visited = new HashSet<>();
         Set<Class<?>> recStack = new HashSet<>();
 
         for (Class<?> vertex : adjList.keySet()) {
             if (hasCycleUtil(vertex, visited, recStack)) {
-                throw new DependencyGraphException(DependencyGraphExceptionMessage.CYCLE_DETECTED.getMessage(), adjList.get(vertex).toString());
+                return true;
             }
         }
+        return false;
     }
 
     private boolean hasCycleUtil(Class<?> current, Set<Class<?>> visited, Set<Class<?>> recStack) {
